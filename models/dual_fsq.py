@@ -111,7 +111,14 @@ def _make_mlp(input_dim: int, hidden_dims: list[int], output_dim: int, activatio
     layers.append(nn.Linear(last_dim, int(output_dim)))
     return nn.Sequential(*layers)
 
+class nonlinearity(nn.Module):
+    def __init__(self):
+        super().__init__()
 
+    def forward(self, x):
+        # swish
+        return x * torch.sigmoid(x)
+    
 def _activation(name: str) -> nn.Module:
     normalized = name.lower().strip()
     if normalized == "elu":
@@ -122,4 +129,6 @@ def _activation(name: str) -> nn.Module:
         return nn.GELU()
     if normalized == "tanh":
         return nn.Tanh()
+    if normalized == "silu":
+        return nonlinearity()
     raise ValueError(f"不支持的 activation: {name}。")

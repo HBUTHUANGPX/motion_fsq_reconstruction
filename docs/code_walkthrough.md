@@ -498,11 +498,11 @@ human_recon:
   decoder(human_encoder(human_window)) 重构 robot_window
 
 latent_align:
-  q_human 和 q_robot 对齐
+  q_human 和 q_robot.detach() 对齐
 
 cycle_latent:
   human -> decoder -> robot_encoder 得到的 q_cycle
-  与 q_human 对齐
+  与 q_human.detach() 对齐
 ```
 
 最后 actor loss 和 critic loss 做平均。

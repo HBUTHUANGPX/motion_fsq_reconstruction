@@ -73,8 +73,8 @@ class DualFSQLoss:
         terms = {
             "robot_recon": F.mse_loss(output.robot_recon_from_robot, robot_target),
             "human_recon": F.mse_loss(output.robot_recon_from_human, robot_target),
-            "latent_align": F.mse_loss(output.q_human, output.q_robot),
-            "cycle_latent": F.mse_loss(output.q_cycle, output.q_human),
+            "latent_align": F.mse_loss(output.q_human, output.q_robot.detach()),
+            "cycle_latent": F.mse_loss(output.q_cycle, output.q_human),#建议不对q_human进行detach
         }
         total = sum(self._weights[name] * value for name, value in terms.items())
         return total, terms

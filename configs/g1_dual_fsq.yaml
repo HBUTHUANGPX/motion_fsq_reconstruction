@@ -104,7 +104,7 @@ model:
   robot_encoder_hidden_dims: [1024, 512, 256]
   human_encoder_hidden_dims: [1024, 512, 256]
   decoder_hidden_dims: [256, 512, 1024]
-  activation: elu
+  activation: silu
   quantizer:
     type: ifsq
     levels: 32
@@ -114,7 +114,7 @@ model:
 loss:
   robot_recon: 1.0
   human_recon: 1.0
-  latent_align: 1.0
+  latent_align: 2.5
   cycle_latent: 0.25
 
 train:
