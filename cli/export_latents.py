@@ -11,6 +11,11 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
+
+if __package__ is None or __package__ == "":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from motion_fsq_reconstruction.config import load_config
 from motion_fsq_reconstruction.export import LatentExporter

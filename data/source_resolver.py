@@ -83,9 +83,97 @@ class MotionSourceResolver:
     def _resolve_yaml(self, path: Path) -> list[tuple[Path, str]]:
         with path.open("r", encoding="utf-8") as file:
             payload = yaml.safe_load(file) or {}
+        if isinstance(payload, dict) and isinstance(payload.get("motion_group"), dict):
+            return self._resolve_motion_group_yaml(payload["motion_group"], path.parent)
         pairs: list[tuple[Path, str]] = []
         self._collect_yaml_paths(payload, path.parent, "default", pairs)
         return pairs
+
+    def _resolve_motion_group_yaml(
+        self,
+        motion_groups: dict[str, Any],
+        base_dir: Path,
+    ) -> list[tuple[Path, str]]:
+        """解析 rsl_rl motion_file.yaml 风格的 motion_group 配置。
+
+        前置条件：
+            `motion_groups` 的每个 group 可以包含 `file_name`、`folder_name`、
+            `wo_file_name`、`wo_folder_name` 字段。
+        后置条件：
+            返回已按 group 标记的 npz 文件；同一 group 内按文件名去重，并应用排除项。
+        """
+
+        pairs: list[tuple[Path, str]] = []
+        for group_name, group_data in motion_groups.items():
+            if not isinstance(group_data, dict):
+                continue
+            group_paths = self._collect_group_paths(group_data, base_dir)
+            pairs.extend((path, str(group_name)) for path in group_paths)
+        return pairs
+
+    def _collect_group_paths(self, group_data: dict[str, Any], base_dir: Path) -> list[Path]:
+        """收集单个 motion group 内的 npz 文件。
+
+        前置条件：
+            `group_data` 来自 motion yaml 的一个 group 节点。
+        后置条件：
+            返回已排序、已排除、已按 basename 去重的路径列表。
+        """
+
+        file_names = self._as_string_list(group_data.get("file_name", []))
+        folder_names = self._as_string_list(group_data.get("folder_name", []))
+        excluded_file_names = self._as_string_list(group_data.get("wo_file_name", []))
+        excluded_folder_names = self._as_string_list(group_data.get("wo_folder_name", []))
+
+        paths_by_basename: dict[str, Path] = {}
+        for file_name in file_names:
+            path = self._resolve_path(file_name, base_dir)
+            if path.suffix == ".npz" and path.exists():
+                paths_by_basename.setdefault(path.name, path)
+
+        for folder_name in folder_names:
+            folder = self._resolve_path(folder_name, base_dir)
+            if not folder.is_dir():
+                continue
+            for path in sorted(folder.rglob("*.npz"), key=lambda item: str(item)):
+                paths_by_basename.setdefault(path.name, path)
+
+        excluded_paths = {
+            self._resolve_path(file_name, base_dir).resolve()
+            for file_name in excluded_file_names
+        }
+        for folder_name in excluded_folder_names:
+            folder = self._resolve_path(folder_name, base_dir)
+            if folder.is_dir():
+                excluded_paths.update(path.resolve() for path in folder.rglob("*.npz"))
+
+        return sorted(
+            (path for path in paths_by_basename.values() if path.resolve() not in excluded_paths),
+            key=lambda item: str(item),
+        )
+
+    @staticmethod
+    def _as_string_list(value: Any) -> list[str]:
+        """将 YAML 字段转换为字符串列表。"""
+
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (list, tuple)):
+            return [str(item) for item in value if item is not None]
+        return []
+
+    @staticmethod
+    def _resolve_path(value: str, base_dir: Path) -> Path:
+        """解析路径，优先按当前工作目录语义处理相对路径。"""
+
+        path = Path(value)
+        if path.is_absolute():
+            return path
+        if path.exists():
+            return path
+        return base_dir / path
 
     def _collect_yaml_paths(
         self,
