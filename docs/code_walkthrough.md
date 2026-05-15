@@ -136,17 +136,30 @@ motion_fsq_reconstruction/cli/train.py
 命令：
 
 ```bash
-python -m motion_fsq_reconstruction.cli.train \
+python motion_fsq_reconstruction/cli/train.py \
   --config motion_fsq_reconstruction/configs/g1_dual_fsq.yaml \
   --device cuda \
   --run-name test_run
+```
+
+多卡训练使用 torchrun：
+
+```bash
+python -m torch.distributed.run \
+  --nnodes=N \
+  --nproc_per_node=M \
+  motion_fsq_reconstruction/cli/train.py \
+  --config motion_fsq_reconstruction/configs/g1_dual_fsq.yaml \
+  --device cuda \
+  --run-name test_run \
+  --distributed
 ```
 
 这个文件很薄，只做三件事：
 
 1. 解析命令行参数。
 2. 调用 `load_config()` 加载 YAML。
-3. 创建 `DualFSQTrainer(config)` 并调用 `train()`。
+3. 创建 `DualFSQTrainer(config, distributed=...)` 并调用 `train()`。
 
 也就是说，真正的训练逻辑不在 CLI 里，而在：
 
@@ -553,11 +566,13 @@ DualFSQTrainer
 
 ```text
 解析 device
+分布式下解析 rank/local_rank/world_size
 创建 run_dir
-创建 TensorBoard writer
+rank0 创建 TensorBoard writer
 build_motion_runtime()
-fit normalizers
+fit normalizers，分布式下 all-reduce 全局统计
 build_training_module()
+分布式下用 DistributedDataParallel 包装模型
 创建 AdamW optimizer
 创建 DualFSQLoss
 ```
@@ -584,6 +599,7 @@ global_step
 config
 normalizers
 feature_schema
+metadata
 ```
 
 ## 16. Checkpoint

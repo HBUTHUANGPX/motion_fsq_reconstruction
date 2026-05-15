@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +19,8 @@ from motion_fsq_reconstruction.config.schema import (
 from motion_fsq_reconstruction.export.latent_exporter import LatentExporter
 from motion_fsq_reconstruction.features.rotation import quat_to_rot6d_wxyz
 from motion_fsq_reconstruction.pipeline import build_motion_runtime
+from motion_fsq_reconstruction.data import ResolvedMotionSources
+from motion_fsq_reconstruction.training.distributed import DistributedRuntime, shard_motion_sources
 from motion_fsq_reconstruction.training.trainer import DualFSQTrainer
 
 
@@ -151,6 +155,78 @@ def test_training_and_latent_export_smoke(tmp_path: Path) -> None:
         assert len(data["motion_paths"].tolist()) == 1
 
 
+def test_frame_balanced_sharding_covers_all_files(tmp_path: Path) -> None:
+    paths = [
+        _write_motion_npz(tmp_path / f"sample_{index}.npz", frames=frames)
+        for index, frames in enumerate((3, 5, 8, 11))
+    ]
+    sources = ResolvedMotionSources(paths=paths, groups=["g"] * len(paths))
+    shard0, info0 = shard_motion_sources(
+        sources,
+        runtime=DistributedRuntime(enabled=True, rank=0, world_size=2, local_rank=0),
+        history=1,
+        future=1,
+    )
+    shard1, info1 = shard_motion_sources(
+        sources,
+        runtime=DistributedRuntime(enabled=True, rank=1, world_size=2, local_rank=1),
+        history=1,
+        future=1,
+    )
+
+    set0 = {str(path) for path in shard0.paths}
+    set1 = {str(path) for path in shard1.paths}
+    assert set0.isdisjoint(set1)
+    assert set0 | set1 == {str(path) for path in paths}
+    assert info0.global_valid_frames == info1.global_valid_frames
+    assert abs(info0.local_valid_frames - info1.local_valid_frames) <= 5
+
+
+def test_distributed_cpu_training_smoke(tmp_path: Path) -> None:
+    motion_paths = [
+        _write_motion_npz(tmp_path / f"ddp_{index}.npz", frames=frames)
+        for index, frames in enumerate((5, 6, 7, 8))
+    ]
+    config_path = tmp_path / "ddp_config.yaml"
+    output_root = tmp_path / "runs"
+    config_path.write_text(
+        _ddp_config_text(motion_paths, output_root),
+        encoding="utf-8",
+    )
+
+    command = [
+        sys.executable,
+        "-m",
+        "torch.distributed.run",
+        "--standalone",
+        "--nproc_per_node=2",
+        "motion_fsq_reconstruction/cli/train.py",
+        "--config",
+        str(config_path),
+        "--device",
+        "cpu",
+        "--run-name",
+        "ddp_cpu_smoke",
+        "--distributed",
+    ]
+    completed = subprocess.run(
+        command,
+        cwd=Path(__file__).resolve().parents[2],
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+    checkpoint = output_root / "ddp_cpu_smoke" / "checkpoints" / "latest.pt"
+    assert checkpoint.is_file()
+    latent_path = tmp_path / "ddp_latents.npz"
+    LatentExporter.from_checkpoint(checkpoint, _load_config_for_test(config_path), device="cpu").export(latent_path)
+    with np.load(latent_path, allow_pickle=True) as data:
+        assert data["actor_q_human"].shape[0] == sum((5, 6, 7, 8))
+
+
 def _make_config(tmp_path: Path, motion_path: Path) -> MotionFSQReconstructionConfig:
     return MotionFSQReconstructionConfig(
         data=DataConfig(files=[str(motion_path)]),
@@ -228,8 +304,7 @@ def _write_shuffled_motion_npz(path: Path) -> Path:
     return path
 
 
-def _write_motion_npz(path: Path) -> Path:
-    frames = 6
+def _write_motion_npz(path: Path, *, frames: int = 6) -> Path:
     robot_body_names = np.asarray(["torso_link", "left_link", "right_link"], dtype=object)
     robot_joint_names = np.asarray(["joint0", "joint1"], dtype=object)
     human_joint_names = np.asarray(["Hips", "Spine1", "LeftHand"], dtype=object)
@@ -261,3 +336,62 @@ def _write_motion_npz(path: Path) -> Path:
         human_local_transforms=human_local_transforms,
     )
     return path
+
+
+def _ddp_config_text(paths: list[Path], output_root: Path) -> str:
+    files = "\n".join(f"    - {path}" for path in paths)
+    return f"""
+data:
+  files:
+{files}
+
+features:
+  robot_anchor_body: torso_link
+  robot_body_names: [torso_link, left_link]
+  robot_joint_names: [joint0, joint1]
+  desire_human_joint_names: [Hips, Spine1, LeftHand]
+  human_anchor_body: Hips
+  human_body_names: [Spine1, LeftHand]
+
+model:
+  latent_dim: 4
+  robot_encoder_hidden_dims: [16]
+  human_encoder_hidden_dims: [16]
+  decoder_hidden_dims: [16]
+  activation: elu
+  quantizer:
+    type: ifsq
+    levels: 8
+    ifsq_boundary_fn: sigmoid
+    ifsq_boundary_scale: 1.6
+
+loss:
+  robot_recon: 1.0
+  human_recon: 1.0
+  latent_align: 1.0
+  cycle_latent: 0.25
+
+train:
+  device: cpu
+  epochs: 1
+  batch_size: 2
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  history: 1
+  future: 1
+  seed: 1
+  log_every_steps: 100
+  checkpoint_interval_epochs: 1
+  normalizer_eps: 0.01
+  progress: false
+
+output:
+  root_dir: {output_root}
+  run_name: ddp_cpu_smoke
+"""
+
+
+def _load_config_for_test(path: Path) -> MotionFSQReconstructionConfig:
+    from motion_fsq_reconstruction.config import load_config
+
+    return load_config(path)

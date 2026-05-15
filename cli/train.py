@@ -28,6 +28,7 @@ def main() -> None:
     parser.add_argument("--config", required=True, help="YAML 配置路径")
     parser.add_argument("--device", default=None, help="覆盖训练设备，例如 cuda 或 cpu")
     parser.add_argument("--run-name", default=None, help="覆盖输出 run name")
+    parser.add_argument("--distributed", action="store_true", help="启用 torch.distributed DDP 训练")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -35,8 +36,9 @@ def main() -> None:
         config.train.device = args.device
     if args.run_name is not None:
         config.output.run_name = args.run_name
-    latest = DualFSQTrainer(config).train()
-    print(f"latest checkpoint: {latest}")
+    latest = DualFSQTrainer(config, distributed=args.distributed).train()
+    if not args.distributed or __import__("os").environ.get("RANK", "0") == "0":
+        print(f"latest checkpoint: {latest}")
 
 
 if __name__ == "__main__":

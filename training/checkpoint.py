@@ -29,6 +29,7 @@ def save_checkpoint(
     config: dict[str, Any],
     normalizers: dict[str, WindowFeatureNormalizer],
     feature_schema: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
 ) -> Path:
     """保存 checkpoint。
 
@@ -52,6 +53,7 @@ def save_checkpoint(
                 for name, normalizer in normalizers.items()
             },
             "feature_schema": feature_schema,
+            "metadata": metadata or {},
         },
         checkpoint_path,
     )

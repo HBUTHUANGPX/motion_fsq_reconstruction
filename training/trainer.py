@@ -16,12 +16,27 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from torch.nn.parallel import DistributedDataParallel
 from tqdm.auto import tqdm
 
 from motion_fsq_reconstruction.config.schema import MotionFSQReconstructionConfig
 from motion_fsq_reconstruction.models import DualFSQTrainingModule
-from motion_fsq_reconstruction.pipeline import MotionRuntimeBundle, build_motion_runtime, build_training_module
+from motion_fsq_reconstruction.pipeline import (
+    MotionRuntimeBundle,
+    build_motion_runtime,
+    build_training_module,
+    resolve_motion_sources,
+)
 from motion_fsq_reconstruction.training.checkpoint import save_checkpoint
+from motion_fsq_reconstruction.training.distributed import (
+    DistributedRuntime,
+    average_epoch_totals,
+    assert_same_object,
+    fit_window_normalizer,
+    max_int,
+    resolve_training_device,
+    shard_motion_sources,
+)
 from motion_fsq_reconstruction.training.losses import DualFSQLoss
 from motion_fsq_reconstruction.training.normalization import WindowFeatureNormalizer
 
@@ -56,25 +71,64 @@ class NullSummaryWriter:
 class DualFSQTrainer:
     """离线 DualFSQ trainer。"""
 
-    def __init__(self, config: MotionFSQReconstructionConfig) -> None:
+    def __init__(
+        self,
+        config: MotionFSQReconstructionConfig,
+        *,
+        distributed: bool = False,
+    ) -> None:
         self._config = config
-        self._device = self._resolve_device(config.train.device)
+        self._distributed = (
+            DistributedRuntime.from_environment(config.train.device)
+            if distributed
+            else DistributedRuntime.disabled()
+        )
+        self._device = resolve_training_device(config.train.device, self._distributed)
         self._global_step = 0
-        torch.manual_seed(config.train.seed)
+        torch.manual_seed(config.train.seed + self._distributed.rank)
         if self._device.type == "cuda":
-            torch.cuda.manual_seed_all(config.train.seed)
+            torch.cuda.manual_seed_all(config.train.seed + self._distributed.rank)
 
         self._run_dir = self._make_run_dir()
         self._checkpoint_dir = self._run_dir / "checkpoints"
         self._log_dir = self._run_dir / "tb"
         self._writer = self._make_writer(self._log_dir)
+        resolved_sources = resolve_motion_sources(config)
+        self._sources, self._shard_info = shard_motion_sources(
+            resolved_sources,
+            runtime=self._distributed,
+            history=config.train.history,
+            future=config.train.future,
+        )
+        self._print(
+            "[MotionFSQShard] "
+            f"rank {self._distributed.rank}/{self._distributed.world_size} "
+            f"loads {self._shard_info.local_file_count} files "
+            f"valid_frames={self._shard_info.local_valid_frames}/"
+            f"{self._shard_info.global_valid_frames}."
+        )
         self._runtime = build_motion_runtime(
             config,
             device=self._device,
-            progress=config.train.progress,
+            progress=config.train.progress and self._distributed.is_main,
+            sources=self._sources,
+        )
+        assert_same_object(
+            self._runtime.features.schema.to_dict(),
+            runtime=self._distributed,
+            label="feature_schema",
         )
         self._normalizers = self._fit_normalizers(self._runtime)
-        self._model = build_training_module(config, self._runtime).to(self._device)
+        model = build_training_module(config, self._runtime).to(self._device)
+        self._model: DualFSQTrainingModule | DistributedDataParallel
+        if self._distributed.enabled:
+            ddp_kwargs: dict[str, Any] = {}
+            if self._device.type == "cuda":
+                ddp_kwargs["device_ids"] = [self._distributed.local_rank]
+                ddp_kwargs["output_device"] = self._distributed.local_rank
+            self._model = DistributedDataParallel(model, **ddp_kwargs)
+        else:
+            self._model = model
         self._optimizer = torch.optim.AdamW(
             self._model.parameters(),
             lr=config.train.learning_rate,
@@ -98,7 +152,7 @@ class DualFSQTrainer:
         """
 
         generator = torch.Generator(device=self._device)
-        generator.manual_seed(self._config.train.seed)
+        generator.manual_seed(self._config.train.seed + self._distributed.rank)
         latest_path = self._checkpoint_dir / "latest.pt"
         epoch_iter = range(1, self._config.train.epochs + 1)
         epoch_bar = self._progress(epoch_iter, total=self._config.train.epochs, desc="DualFSQ epoch")
@@ -108,12 +162,20 @@ class DualFSQTrainer:
                 totals: dict[str, float] = {"total": 0.0}
                 batch_count = 0
                 self._model.train()
+                epoch_num_batches = None
+                if self._distributed.enabled:
+                    epoch_num_batches = max_int(
+                        self._runtime.buffer.num_batches(self._config.train.batch_size),
+                        device=self._device,
+                        runtime=self._distributed,
+                    )
                 batch_bar = self._progress(
                     self._runtime.buffer.iter_epoch_batches(
                         self._config.train.batch_size,
                         generator=generator,
+                        num_batches=epoch_num_batches,
                     ),
-                    total=self._runtime.buffer.num_batches(self._config.train.batch_size),
+                    total=epoch_num_batches or self._runtime.buffer.num_batches(self._config.train.batch_size),
                     desc=f"epoch {epoch}",
                     leave=False,
                 )
@@ -139,67 +201,92 @@ class DualFSQTrainer:
                         totals[name] = totals.get(name, 0.0) + float(value.detach().cpu())
                     if self._global_step % self._config.train.log_every_steps == 0:
                         self._log_step(loss_output.terms, loss_output.total, output)
-                self._log_epoch(epoch, totals, max(batch_count, 1), time.time() - start_time)
-                latest_path = self._save(epoch, "latest.pt")
+                averaged = average_epoch_totals(
+                    totals,
+                    batch_count=max(batch_count, 1),
+                    device=self._device,
+                    runtime=self._distributed,
+                )
+                self._log_epoch(epoch, averaged, time.time() - start_time)
+                if self._distributed.is_main:
+                    latest_path = self._save(epoch, "latest.pt")
                 if (
+                    self._distributed.is_main
+                    and
                     self._config.train.checkpoint_interval_epochs > 0
                     and epoch % self._config.train.checkpoint_interval_epochs == 0
                 ):
                     self._save(epoch, f"epoch_{epoch:04d}.pt")
                 if hasattr(epoch_bar, "set_postfix"):
-                    epoch_bar.set_postfix({"loss": f"{totals['total'] / max(batch_count, 1):.6f}"})
+                    epoch_bar.set_postfix({"loss": f"{averaged['total']:.6f}"})
+                self._distributed.barrier()
         finally:
             self._writer.close()
+            self._distributed.barrier()
+            self._distributed.close()
         return latest_path
 
     def _fit_normalizers(self, runtime: MotionRuntimeBundle) -> dict[str, WindowFeatureNormalizer]:
         window_size = runtime.window_size
         eps = self._config.train.normalizer_eps
         return {
-            "actor_robot": WindowFeatureNormalizer.fit(
+            "actor_robot": fit_window_normalizer(
                 runtime.features.actor_robot,
                 window_size=window_size,
                 eps=eps,
+                runtime=self._distributed,
             ).to(self._device),
-            "actor_human": WindowFeatureNormalizer.fit(
+            "actor_human": fit_window_normalizer(
                 runtime.features.actor_human,
                 window_size=window_size,
                 eps=eps,
+                runtime=self._distributed,
             ).to(self._device),
-            "critic_robot": WindowFeatureNormalizer.fit(
+            "critic_robot": fit_window_normalizer(
                 runtime.features.critic_robot,
                 window_size=window_size,
                 eps=eps,
+                runtime=self._distributed,
             ).to(self._device),
-            "critic_human": WindowFeatureNormalizer.fit(
+            "critic_human": fit_window_normalizer(
                 runtime.features.critic_human,
                 window_size=window_size,
                 eps=eps,
+                runtime=self._distributed,
             ).to(self._device),
         }
 
     def _save(self, epoch: int, filename: str) -> Path:
+        model = self._unwrap_model()
         return save_checkpoint(
             path=self._checkpoint_dir / filename,
-            model=self._model,
+            model=model,
             optimizer=self._optimizer,
             epoch=epoch,
             global_step=self._global_step,
             config=self._config.to_dict(),
             normalizers=self._normalizers,
             feature_schema=self._runtime.features.schema.to_dict(),
+            metadata={
+                "distributed_world_size": self._distributed.world_size,
+                "distributed_shard_info": self._shard_info.to_dict(),
+            },
         )
 
     def _log_step(self, terms: dict[str, torch.Tensor], total: torch.Tensor, output: Any) -> None:
+        if not self._distributed.is_main:
+            return
         self._writer.add_scalar("train/total", float(total.detach().cpu()), self._global_step)
         for name, value in terms.items():
             self._writer.add_scalar(f"train/{name}", float(value.detach().cpu()), self._global_step)
         self._writer.add_histogram("latent/actor_q_human", output.actor.q_human.detach().cpu(), self._global_step)
         self._writer.add_histogram("latent/critic_q_robot", output.critic.q_robot.detach().cpu(), self._global_step)
 
-    def _log_epoch(self, epoch: int, totals: dict[str, float], batch_count: int, elapsed: float) -> None:
-        for name, value in totals.items():
-            self._writer.add_scalar(f"epoch/{name}", value / batch_count, epoch)
+    def _log_epoch(self, epoch: int, averages: dict[str, float], elapsed: float) -> None:
+        if not self._distributed.is_main:
+            return
+        for name, value in averages.items():
+            self._writer.add_scalar(f"epoch/{name}", value, epoch)
         self._writer.add_scalar("epoch/time_sec", elapsed, epoch)
 
     def _make_run_dir(self) -> Path:
@@ -209,17 +296,22 @@ class DualFSQTrainer:
         return path
 
     def _progress(self, iterable: Any, **kwargs: Any) -> Any:
-        if not self._config.train.progress:
+        if not self._config.train.progress or not self._distributed.is_main:
             return iterable
         return tqdm(iterable, dynamic_ncols=True, **kwargs)
 
-    def _resolve_device(self, requested: str) -> torch.device:
-        if requested.startswith("cuda") and not torch.cuda.is_available():
-            return torch.device("cpu")
-        return torch.device(requested)
+    def _unwrap_model(self) -> DualFSQTrainingModule:
+        if isinstance(self._model, DistributedDataParallel):
+            return self._model.module
+        return self._model
 
-    @staticmethod
-    def _make_writer(log_dir: Path) -> Any:
+    def _print(self, message: str) -> None:
+        if self._distributed.is_main:
+            print(message)
+
+    def _make_writer(self, log_dir: Path) -> Any:
+        if not self._distributed.is_main:
+            return NullSummaryWriter()
         try:
             from torch.utils.tensorboard import SummaryWriter
         except ImportError:

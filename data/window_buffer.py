@@ -177,11 +177,27 @@ class MotionWindowBuffer:
         batch_size: int,
         *,
         generator: torch.Generator | None = None,
+        num_batches: int | None = None,
     ) -> Iterator[MotionWindowBatch]:
         """按 epoch 随机无放回遍历合法中心帧。"""
 
         if batch_size <= 0:
             raise ValueError("batch_size 必须为正数。")
+        if num_batches is not None:
+            if num_batches <= 0:
+                raise ValueError("num_batches 必须为正数。")
+            for _ in range(num_batches):
+                sample_ids = torch.randint(
+                    self.valid_center_indices.numel(),
+                    (batch_size,),
+                    device=self._device,
+                    generator=generator,
+                )
+                yield self.batch_from_centers(
+                    self.valid_center_indices[sample_ids],
+                    clamp_to_clip=False,
+                )
+            return
         order = torch.randperm(
             self.valid_center_indices.numel(),
             device=self._device,
