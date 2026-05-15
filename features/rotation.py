@@ -40,10 +40,22 @@ def quat_to_matrix_wxyz(quat: torch.Tensor) -> torch.Tensor:
 
 
 def quat_to_rot6d_wxyz(quat: torch.Tensor) -> torch.Tensor:
-    """将 quaternion 转换为旋转矩阵前两列拼接的 6D 表示。"""
+    """将 quaternion 转换为在线 `rot6d_from_quat` 相同顺序的 6D 表示。"""
 
-    matrix = quat_to_matrix_wxyz(quat)
-    return torch.cat((matrix[..., :, 0], matrix[..., :, 1]), dim=-1)
+    quat = normalize_quat_wxyz(quat)
+    r, i, j, k = torch.unbind(quat, dim=-1)
+    two_s = 2.0 / (quat * quat).sum(dim=-1)
+    return torch.stack(
+        (
+            1 - two_s * (j * j + k * k),
+            two_s * (i * j - k * r),
+            two_s * (i * j + k * r),
+            1 - two_s * (i * i + k * k),
+            two_s * (i * k - j * r),
+            two_s * (j * k + i * r),
+        ),
+        dim=-1,
+    )
 
 
 def quat_conjugate_wxyz(quat: torch.Tensor) -> torch.Tensor:

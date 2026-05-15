@@ -114,8 +114,8 @@ model:
 loss:
   robot_recon: 1.0
   human_recon: 1.0
-  latent_align: 5.0
-  cycle_latent: 25
+  latent_align: 15.0
+  cycle_latent: 2.5
 
 train:
   device: cuda

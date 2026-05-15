@@ -104,15 +104,19 @@ class MotionWindowIndex:
         return raw.clamp(min=starts[:, None], max=ends[:, None])
 
     def _build_valid_center_indices(self) -> torch.Tensor:
-        centers: list[torch.Tensor] = []
-        for start, length in zip(self._clip_starts.tolist(), self._motion_lengths.tolist()):
-            first = start + self._history
-            last_exclusive = start + length - self._future
-            if first < last_exclusive:
-                centers.append(torch.arange(first, last_exclusive, device=self._device))
-        if not centers:
+        total_frames = self._motion_lengths.sum()
+        frame_indices = torch.arange(total_frames, device=self._device, dtype=torch.long)
+        clip_ids = torch.repeat_interleave(
+            torch.arange(self._motion_lengths.numel(), device=self._device, dtype=torch.long),
+            self._motion_lengths,
+        )
+        local_indices = frame_indices - self._clip_starts[clip_ids]
+        clip_lengths = self._motion_lengths[clip_ids]
+        valid_mask = (local_indices >= self._history) & (local_indices < clip_lengths - self._future)
+        valid_centers = frame_indices[valid_mask]
+        if valid_centers.numel() == 0:
             raise ValueError("当前 history/future 下没有合法中心帧。")
-        return torch.cat(centers, dim=0)
+        return valid_centers
 
 
 class MotionWindowBuffer:

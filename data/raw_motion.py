@@ -226,11 +226,11 @@ def _read_field(
     path: Path,
     canonical: str,
 ) -> np.ndarray:
+    if canonical == "human_joint_quat" and "human_local_transforms" in data:
+        return np.asarray(data["human_local_transforms"])[..., 3:7]
     for name in aliases:
         if name in data:
             return np.asarray(data[name])
-    if canonical == "human_joint_quat" and "human_local_transforms" in data:
-        return np.asarray(data["human_local_transforms"])[..., 3:7]
     raise KeyError(f"{path} 缺少字段 {aliases}。")
 
 

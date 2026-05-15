@@ -81,16 +81,17 @@ class LatentExporter:
 
         batch_size = batch_size or self._config.train.batch_size
         centers = self._runtime.buffer.index.all_center_indices
-        actor_q_human: list[torch.Tensor] = []
-        actor_q_robot: list[torch.Tensor] = []
-        critic_q_human: list[torch.Tensor] = []
-        critic_q_robot: list[torch.Tensor] = []
+        actor_q_human: torch.Tensor | None = None
+        actor_q_robot: torch.Tensor | None = None
+        critic_q_human: torch.Tensor | None = None
+        critic_q_robot: torch.Tensor | None = None
         iterator = range(0, centers.numel(), batch_size)
         if self._config.train.progress:
             iterator = tqdm(iterator, dynamic_ncols=True, desc="导出 latent")
         with torch.inference_mode():
             for start in iterator:
                 batch_centers = centers[start : start + batch_size]
+                end = start + batch_centers.numel()
                 batch = self._runtime.buffer.batch_from_centers(batch_centers, clamp_to_clip=True)
                 actor_robot = self._normalizers["actor_robot"](batch.actor_robot)
                 actor_human = self._normalizers["actor_human"](batch.actor_human)
@@ -100,19 +101,32 @@ class LatentExporter:
                 _, q_ah, _ = self._model.actor_dual_fsq.encode_human(actor_human)
                 _, q_cr, _ = self._model.critic_dual_fsq.encode_robot(critic_robot)
                 _, q_ch, _ = self._model.critic_dual_fsq.encode_human(critic_human)
-                actor_q_robot.append(q_ar.detach().cpu())
-                actor_q_human.append(q_ah.detach().cpu())
-                critic_q_robot.append(q_cr.detach().cpu())
-                critic_q_human.append(q_ch.detach().cpu())
+                if actor_q_human is None:
+                    actor_q_human = torch.empty((centers.numel(), q_ah.shape[-1]), dtype=q_ah.dtype)
+                    actor_q_robot = torch.empty((centers.numel(), q_ar.shape[-1]), dtype=q_ar.dtype)
+                    critic_q_human = torch.empty((centers.numel(), q_ch.shape[-1]), dtype=q_ch.dtype)
+                    critic_q_robot = torch.empty((centers.numel(), q_cr.shape[-1]), dtype=q_cr.dtype)
+                actor_q_robot[start:end].copy_(q_ar.detach().cpu())
+                actor_q_human[start:end].copy_(q_ah.detach().cpu())
+                critic_q_robot[start:end].copy_(q_cr.detach().cpu())
+                critic_q_human[start:end].copy_(q_ch.detach().cpu())
+
+        if (
+            actor_q_human is None
+            or actor_q_robot is None
+            or critic_q_human is None
+            or critic_q_robot is None
+        ):
+            raise RuntimeError("没有可导出的 latent。")
 
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         np.savez(
             output,
-            actor_q_human=torch.cat(actor_q_human, dim=0).numpy(),
-            actor_q_robot=torch.cat(actor_q_robot, dim=0).numpy(),
-            critic_q_human=torch.cat(critic_q_human, dim=0).numpy(),
-            critic_q_robot=torch.cat(critic_q_robot, dim=0).numpy(),
+            actor_q_human=actor_q_human.numpy(),
+            actor_q_robot=actor_q_robot.numpy(),
+            critic_q_human=critic_q_human.numpy(),
+            critic_q_robot=critic_q_robot.numpy(),
             motion_lengths=self._runtime.raw.motion_lengths.detach().cpu().numpy(),
             motion_start_indices=self._runtime.raw.motion_start_indices.detach().cpu().numpy(),
             motion_paths=np.asarray(self._runtime.raw.motion_paths, dtype=object),

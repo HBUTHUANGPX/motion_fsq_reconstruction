@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import torch
 
 from motion_fsq_reconstruction.config.schema import (
     DataConfig,
@@ -14,8 +15,18 @@ from motion_fsq_reconstruction.config.schema import (
     TrainConfig,
 )
 from motion_fsq_reconstruction.export.latent_exporter import LatentExporter
+from motion_fsq_reconstruction.features.rotation import quat_to_rot6d_wxyz
 from motion_fsq_reconstruction.pipeline import build_motion_runtime
 from motion_fsq_reconstruction.training.trainer import DualFSQTrainer
+
+
+def test_rot6d_matches_motion_command_flatten_order() -> None:
+    quat = np.asarray([[0.5, 0.5, 0.5, 0.5]], dtype=np.float32)
+
+    actual = quat_to_rot6d_wxyz(torch.as_tensor(quat)).cpu().numpy()
+
+    expected = np.asarray([[0.0, 0.0, 1.0, 0.0, 0.0, 1.0]], dtype=np.float32)
+    np.testing.assert_allclose(actual, expected, atol=1.0e-6)
 
 
 def test_feature_shapes_match_online_dual_fsq_schema(tmp_path: Path) -> None:
@@ -33,7 +44,7 @@ def test_feature_shapes_match_online_dual_fsq_schema(tmp_path: Path) -> None:
     assert runtime.critic_robot_input_dim == 87
     assert runtime.critic_human_input_dim == 117
 
-    identity_rot6d = np.asarray([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
+    identity_rot6d = np.asarray([1.0, 0.0, 0.0, 1.0, 0.0, 0.0], dtype=np.float32)
     expected_actor_robot = np.concatenate(
         (
             identity_rot6d,
@@ -90,6 +101,35 @@ def test_loader_reorders_names_like_online_motion_loader(tmp_path: Path) -> None
         runtime.raw.human_body_pos_w[0, :, 0].cpu().numpy(),
         np.asarray([100.0, 200.0, 300.0], dtype=np.float32),
     )
+
+
+def test_loader_prefers_human_local_transforms_for_joint_quat(tmp_path: Path) -> None:
+    motion_path = _write_shuffled_motion_npz(tmp_path / "with_extra_joint_quat.npz")
+    with np.load(motion_path, allow_pickle=True) as data:
+        payload = {name: data[name] for name in data.files}
+    wrong_joint_quat = np.zeros((2, 4, 4), dtype=np.float32)
+    wrong_joint_quat[..., 2] = 1.0
+    payload["human_joint_quat"] = wrong_joint_quat
+    np.savez(motion_path, **payload)
+
+    config = MotionFSQReconstructionConfig(
+        data=DataConfig(files=[str(motion_path)]),
+        features=FeatureConfig(
+            robot_anchor_body="torso_link",
+            robot_body_names=["torso_link", "pelvis"],
+            robot_joint_names=["hip", "knee"],
+            desire_human_joint_names=["Hips", "Chest", "HeadEnd"],
+            human_anchor_body="Hips",
+            human_body_names=["Chest", "HeadEnd"],
+        ),
+        train=TrainConfig(device="cpu", history=0, future=0, progress=False),
+    )
+
+    runtime = build_motion_runtime(config, device="cpu", progress=False)
+
+    expected = np.zeros((3, 4), dtype=np.float32)
+    expected[:, 0] = 1.0
+    np.testing.assert_allclose(runtime.raw.human_joint_quat[0].cpu().numpy(), expected)
 
 
 def test_training_and_latent_export_smoke(tmp_path: Path) -> None:
