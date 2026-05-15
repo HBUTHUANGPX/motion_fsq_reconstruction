@@ -19,26 +19,6 @@ def normalize_quat_wxyz(quat: torch.Tensor, eps: float = 1.0e-8) -> torch.Tensor
     return quat / quat.norm(dim=-1, keepdim=True).clamp_min(eps)
 
 
-def quat_to_matrix_wxyz(quat: torch.Tensor) -> torch.Tensor:
-    """将 wxyz quaternion 转换为旋转矩阵。
-
-    前置条件：
-        `quat.shape[-1] == 4`。
-    后置条件：
-        返回 shape 为 `quat.shape[:-1] + (3, 3)` 的旋转矩阵。
-    """
-
-    quat = normalize_quat_wxyz(quat)
-    w, x, y, z = quat.unbind(dim=-1)
-    ww, xx, yy, zz = w * w, x * x, y * y, z * z
-    wx, wy, wz = w * x, w * y, w * z
-    xy, xz, yz = x * y, x * z, y * z
-    row0 = torch.stack((ww + xx - yy - zz, 2 * (xy - wz), 2 * (xz + wy)), dim=-1)
-    row1 = torch.stack((2 * (xy + wz), ww - xx + yy - zz, 2 * (yz - wx)), dim=-1)
-    row2 = torch.stack((2 * (xz - wy), 2 * (yz + wx), ww - xx - yy + zz), dim=-1)
-    return torch.stack((row0, row1, row2), dim=-2)
-
-
 def quat_to_rot6d_wxyz(quat: torch.Tensor) -> torch.Tensor:
     """将 quaternion 转换为在线 `rot6d_from_quat` 相同顺序的 6D 表示。"""
 

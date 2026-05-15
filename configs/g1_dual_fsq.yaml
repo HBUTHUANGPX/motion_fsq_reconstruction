@@ -101,9 +101,9 @@ features:
 
 model:
   latent_dim: 64
-  robot_encoder_hidden_dims: [512, 256]
-  human_encoder_hidden_dims: [512, 256]
-  decoder_hidden_dims: [256, 512]
+  robot_encoder_hidden_dims: [1024, 512, 256]
+  human_encoder_hidden_dims: [1024, 512, 256]
+  decoder_hidden_dims: [256, 512, 1024]
   activation: elu
   quantizer:
     type: ifsq
@@ -114,8 +114,8 @@ model:
 loss:
   robot_recon: 1.0
   human_recon: 1.0
-  latent_align: 15.0
-  cycle_latent: 2.5
+  latent_align: 1.0
+  cycle_latent: 0.25
 
 train:
   device: cuda

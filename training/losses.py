@@ -45,12 +45,6 @@ class DualFSQLoss:
             "cycle_latent": float(cycle_latent),
         }
 
-    @property
-    def weights(self) -> dict[str, float]:
-        """返回损失权重副本。"""
-
-        return dict(self._weights)
-
     def __call__(
         self,
         output: DualFSQTrainingOutput,

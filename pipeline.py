@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 import torch
 
@@ -165,9 +164,3 @@ def _build_autoencoder(
         quantizer=quantizer,
         activation=config.model.activation,
     )
-
-
-def path_from_config(root: str, run_name: str) -> Path:
-    """构造输出目录路径。"""
-
-    return Path(root) / run_name

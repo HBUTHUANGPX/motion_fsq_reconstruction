@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import Iterable
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 
 
@@ -134,17 +133,6 @@ def _quantize_bound_latent(z_bound: torch.Tensor, levels: int) -> dict[str, torc
     indices = torch.round(scaled).clamp(0, levels - 1).long()
     z_q = (indices.to(z_bound.dtype) / scale) * 2.0 - 1.0
     z_q_st = z_bound + (z_q - z_bound).detach()
-    one_hot = F.one_hot(indices, num_classes=levels).to(dtype=z_bound.dtype)
-    per_dim_usage = one_hot.mean(dim=0)
-    used = per_dim_usage > 1.0e-6
-    unique_per_dim = used.sum(dim=1).clamp(min=1).to(dtype=z_bound.dtype)
-    entropy_probs = per_dim_usage / per_dim_usage.sum(dim=1, keepdim=True).clamp_min(1.0e-10)
-    entropy = -torch.sum(entropy_probs * torch.log2(entropy_probs.clamp_min(1.0e-10)), dim=1)
     return {
         "z_q": z_q_st,
-        "indices": indices,
-        "level_histogram": per_dim_usage.mean(dim=0),
-        "avg_utilization": used.to(dtype=z_bound.dtype).mean() * 100.0,
-        "effective_bits": torch.log2(unique_per_dim).mean(),
-        "effective_bits_entropy": entropy.mean(),
     }

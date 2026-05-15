@@ -466,18 +466,7 @@ FSQQuantizer
 IFSQuantizer
 ```
 
-输出是 dict，至少包含：
-
-```python
-z_q
-indices
-level_histogram
-avg_utilization
-effective_bits
-effective_bits_entropy
-```
-
-训练、重构和导出真正使用的是：
+输出是 dict，包含训练和导出实际需要的：
 
 ```python
 z_q
