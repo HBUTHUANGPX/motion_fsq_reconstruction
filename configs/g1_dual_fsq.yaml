@@ -1,0 +1,73 @@
+data:
+  motion_yaml: scripts/rsl_rl/motion_file_mr.yaml
+  files: []
+  dirs: [] 
+  exclude_files: []
+  exclude_dirs: []
+  groups: []
+
+features:
+  robot_anchor_body: torso_link
+  human_anchor_body: Hips
+  human_body_names:
+    - Spine1
+    - Spine2
+    - Chest
+    - Neck1
+    - Neck2
+    - Head
+    - HeadEnd
+    - LeftShoulder
+    - LeftArm
+    - LeftForeArm
+    - LeftHand
+    - RightShoulder
+    - RightArm
+    - RightForeArm
+    - RightHand
+    - LeftLeg
+    - LeftShin
+    - LeftFoot
+    - LeftToeBase
+    - LeftToeEnd
+    - RightLeg
+    - RightShin
+    - RightFoot
+    - RightToeBase
+    - RightToeEnd
+
+model:
+  latent_dim: 64
+  robot_encoder_hidden_dims: [512, 256]
+  human_encoder_hidden_dims: [512, 256]
+  decoder_hidden_dims: [256, 512]
+  activation: elu
+  quantizer:
+    type: ifsq
+    levels: 32
+    ifsq_boundary_fn: sigmoid
+    ifsq_boundary_scale: 1.6
+
+loss:
+  robot_recon: 1.0
+  human_recon: 1.0
+  latent_align: 5.0
+  cycle_latent: 0.25
+
+train:
+  device: cuda
+  epochs: 100
+  batch_size: 1024
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  history: 0
+  future: 9
+  seed: 1
+  log_every_steps: 20
+  checkpoint_interval_epochs: 10
+  normalizer_eps: 0.01
+  progress: true
+
+output:
+  root_dir: outputs/motion_fsq_reconstruction
+  run_name:
