@@ -13,7 +13,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from motion_fsq_reconstruction.features.specs import DEFAULT_HUMAN_BODY_NAMES
+from motion_fsq_reconstruction.features.specs import (
+    DEFAULT_DESIRE_HUMAN_JOINT_NAMES,
+    DEFAULT_HUMAN_BODY_NAMES,
+    DEFAULT_ROBOT_BODY_NAMES,
+)
 
 
 @dataclass
@@ -49,6 +53,13 @@ class FeatureConfig:
     """
 
     robot_anchor_body: str = "torso_link"
+    robot_body_names: list[str] = field(
+        default_factory=lambda: list(DEFAULT_ROBOT_BODY_NAMES)
+    )
+    robot_joint_names: list[str] = field(default_factory=list)
+    desire_human_joint_names: list[str] = field(
+        default_factory=lambda: list(DEFAULT_DESIRE_HUMAN_JOINT_NAMES)
+    )
     human_anchor_body: str = "Hips"
     human_body_names: list[str] = field(
         default_factory=lambda: list(DEFAULT_HUMAN_BODY_NAMES)

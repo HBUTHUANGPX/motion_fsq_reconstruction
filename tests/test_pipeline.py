@@ -26,11 +26,11 @@ def test_feature_shapes_match_online_dual_fsq_schema(tmp_path: Path) -> None:
 
     assert runtime.features.actor_robot.shape == (6, 8)
     assert runtime.features.actor_human.shape == (6, 12)
-    assert runtime.features.critic_robot.shape == (6, 38)
+    assert runtime.features.critic_robot.shape == (6, 29)
     assert runtime.features.critic_human.shape == (6, 39)
     assert runtime.actor_robot_input_dim == 24
     assert runtime.actor_human_input_dim == 36
-    assert runtime.critic_robot_input_dim == 114
+    assert runtime.critic_robot_input_dim == 87
     assert runtime.critic_human_input_dim == 117
 
     identity_rot6d = np.asarray([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
@@ -58,6 +58,40 @@ def test_feature_shapes_match_online_dual_fsq_schema(tmp_path: Path) -> None:
     )
 
 
+def test_loader_reorders_names_like_online_motion_loader(tmp_path: Path) -> None:
+    motion_path = _write_shuffled_motion_npz(tmp_path / "shuffled.npz")
+    config = MotionFSQReconstructionConfig(
+        data=DataConfig(files=[str(motion_path)]),
+        features=FeatureConfig(
+            robot_anchor_body="torso_link",
+            robot_body_names=["torso_link", "pelvis"],
+            robot_joint_names=["hip", "knee"],
+            desire_human_joint_names=["Hips", "Chest", "HeadEnd"],
+            human_anchor_body="Hips",
+            human_body_names=["Chest", "HeadEnd"],
+        ),
+        train=TrainConfig(device="cpu", history=0, future=0, progress=False),
+    )
+
+    runtime = build_motion_runtime(config, device="cpu", progress=False)
+
+    assert runtime.raw.robot_body_names == ["torso_link", "pelvis"]
+    assert runtime.raw.robot_joint_names == ["hip", "knee"]
+    assert runtime.raw.human_body_names == ["Hips", "Chest", "HeadEnd"]
+    np.testing.assert_allclose(
+        runtime.raw.joint_pos[0].cpu().numpy(),
+        np.asarray([1.0, 2.0], dtype=np.float32),
+    )
+    np.testing.assert_allclose(
+        runtime.raw.body_pos_w[0, :, 0].cpu().numpy(),
+        np.asarray([10.0, 20.0], dtype=np.float32),
+    )
+    np.testing.assert_allclose(
+        runtime.raw.human_body_pos_w[0, :, 0].cpu().numpy(),
+        np.asarray([100.0, 200.0, 300.0], dtype=np.float32),
+    )
+
+
 def test_training_and_latent_export_smoke(tmp_path: Path) -> None:
     motion_path = _write_motion_npz(tmp_path / "sample.npz")
     config = _make_config(tmp_path, motion_path)
@@ -82,6 +116,9 @@ def _make_config(tmp_path: Path, motion_path: Path) -> MotionFSQReconstructionCo
         data=DataConfig(files=[str(motion_path)]),
         features=FeatureConfig(
             robot_anchor_body="torso_link",
+            robot_body_names=["torso_link", "left_link"],
+            robot_joint_names=["joint0", "joint1"],
+            desire_human_joint_names=["Hips", "Spine1", "LeftHand"],
             human_anchor_body="Hips",
             human_body_names=["Spine1", "LeftHand"],
         ),
@@ -104,6 +141,51 @@ def _make_config(tmp_path: Path, motion_path: Path) -> MotionFSQReconstructionCo
         ),
         output=OutputConfig(root_dir=str(tmp_path / "runs"), run_name="smoke"),
     )
+
+
+def _write_shuffled_motion_npz(path: Path) -> Path:
+    frames = 2
+    robot_body_names = np.asarray(["pelvis", "torso_link", "unused_body"], dtype=object)
+    robot_joint_names = np.asarray(["knee", "unused_joint", "hip"], dtype=object)
+    human_joint_names = np.asarray(["HeadEnd", "Hips", "Chest", "UnusedHuman"], dtype=object)
+
+    robot_joint_pos = np.asarray([[2.0, 9.0, 1.0], [5.0, 9.0, 4.0]], dtype=np.float32)
+    robot_joint_vel = np.zeros_like(robot_joint_pos)
+    robot_body_pos = np.zeros((frames, 3, 3), dtype=np.float32)
+    robot_body_pos[:, 0, 0] = 20.0
+    robot_body_pos[:, 1, 0] = 10.0
+    robot_body_pos[:, 2, 0] = 90.0
+    robot_body_quat = np.zeros((frames, 3, 4), dtype=np.float32)
+    robot_body_quat[..., 0] = 1.0
+
+    human_global_pos = np.zeros((frames, 4, 3), dtype=np.float32)
+    human_global_pos[:, 0, 0] = 300.0
+    human_global_pos[:, 1, 0] = 100.0
+    human_global_pos[:, 2, 0] = 200.0
+    human_global_pos[:, 3, 0] = 900.0
+    human_global_quat = np.zeros((frames, 4, 4), dtype=np.float32)
+    human_global_quat[..., 0] = 1.0
+    human_local_transforms = np.zeros((frames, 4, 7), dtype=np.float32)
+    human_local_transforms[..., 3] = 1.0
+
+    np.savez(
+        path,
+        fps=np.asarray(30),
+        scalar_first=np.asarray(True),
+        robot_joint_names=robot_joint_names,
+        robot_body_names=robot_body_names,
+        human_joint_names=human_joint_names,
+        robot_joint_pos=robot_joint_pos,
+        robot_joint_vel=robot_joint_vel,
+        robot_body_pos=robot_body_pos,
+        robot_body_quat=robot_body_quat,
+        robot_body_lin_vel=np.zeros_like(robot_body_pos),
+        robot_body_ang_vel=np.zeros_like(robot_body_pos),
+        human_global_pos=human_global_pos,
+        human_global_quat=human_global_quat,
+        human_local_transforms=human_local_transforms,
+    )
+    return path
 
 
 def _write_motion_npz(path: Path) -> Path:

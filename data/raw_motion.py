@@ -80,7 +80,15 @@ class RawMotionLoader:
         输出字段语义对齐在线 MotionLoader 的 `_motion_data_np_list_to_tensor`。
     """
 
-    def __init__(self, files: Sequence[str | Path], groups: Sequence[str] | None = None) -> None:
+    def __init__(
+        self,
+        files: Sequence[str | Path],
+        groups: Sequence[str] | None = None,
+        *,
+        robot_body_names: Sequence[str] | None = None,
+        robot_joint_names: Sequence[str] | None = None,
+        desire_human_joint_names: Sequence[str] | None = None,
+    ) -> None:
         if not files:
             raise ValueError("至少需要一个 motion npz 文件。")
         self._files = [Path(path) for path in files]
@@ -90,6 +98,9 @@ class RawMotionLoader:
             if len(groups) != len(self._files):
                 raise ValueError("groups 长度必须与 files 一致。")
             self._groups = list(groups)
+        self._target_robot_body_names = list(robot_body_names or [])
+        self._target_robot_joint_names = list(robot_joint_names or [])
+        self._target_human_joint_names = list(desire_human_joint_names or [])
 
     @property
     def files(self) -> list[Path]:
@@ -108,9 +119,15 @@ class RawMotionLoader:
 
         arrays: dict[str, list[np.ndarray]] = {name: [] for name in FIELD_ALIASES}
         fps: int | None = None
+        file_robot_joint_names: list[str] | None = None
+        file_robot_body_names: list[str] | None = None
+        file_human_body_names: list[str] | None = None
         robot_joint_names: list[str] | None = None
         robot_body_names: list[str] | None = None
         human_body_names: list[str] | None = None
+        robot_joint_indices: list[int] | None = None
+        robot_body_indices: list[int] | None = None
+        human_joint_indices: list[int] | None = None
         lengths: list[int] = []
 
         iterator = _progress(self._files, progress=progress, desc="加载 DualFSQ motion", unit="file")
@@ -123,28 +140,52 @@ class RawMotionLoader:
                 if file_fps != fps:
                     raise ValueError(f"所有 motion fps 必须一致，{path} 为 {file_fps}。")
 
-                robot_joint_names = _check_names(
+                file_robot_joint_names = _check_names(
                     "robot_joint_names",
-                    robot_joint_names,
+                    file_robot_joint_names,
                     _read_names(data, ("robot_joint_names", "joint_names")),
                     path,
                 )
-                robot_body_names = _check_names(
+                file_robot_body_names = _check_names(
                     "robot_body_names",
-                    robot_body_names,
+                    file_robot_body_names,
                     _read_names(data, ("robot_body_names", "body_names")),
                     path,
                 )
-                human_body_names = _check_names(
+                file_human_body_names = _check_names(
                     "human_body_names",
-                    human_body_names,
+                    file_human_body_names,
                     _read_names(data, ("human_body_names", "human_joint_names")),
                     path,
                 )
+                if robot_joint_indices is None:
+                    robot_joint_names = self._target_robot_joint_names or list(file_robot_joint_names)
+                    robot_joint_indices = _indices(file_robot_joint_names, robot_joint_names, "robot_joint_names")
+                if robot_body_indices is None:
+                    robot_body_names = self._target_robot_body_names or list(file_robot_body_names)
+                    robot_body_indices = _indices(file_robot_body_names, robot_body_names, "robot_body_names")
+                if human_joint_indices is None:
+                    human_body_names = self._target_human_joint_names or list(file_human_body_names)
+                    human_joint_indices = _indices(file_human_body_names, human_body_names, "human_joint_names")
 
                 scalar_first = _read_scalar_first(data)
                 for canonical, aliases in FIELD_ALIASES.items():
                     array = _read_field(data, aliases, path, canonical)
+                    if canonical in ("joint_pos", "joint_vel"):
+                        array = array[:, robot_joint_indices]
+                    elif canonical in (
+                        "body_pos_w",
+                        "body_quat_w",
+                        "body_lin_vel_w",
+                        "body_ang_vel_w",
+                    ):
+                        array = array[:, robot_body_indices]
+                    elif canonical in (
+                        "human_body_pos_w",
+                        "human_body_quat_w",
+                        "human_joint_quat",
+                    ):
+                        array = array[:, human_joint_indices]
                     if canonical in ("body_quat_w", "human_body_quat_w", "human_joint_quat"):
                         array = _to_wxyz(array.astype(np.float32), scalar_first)
                     arrays[canonical].append(np.asarray(array, dtype=np.float32))
@@ -206,6 +247,16 @@ def _check_names(name: str, expected: list[str] | None, current: list[str], path
     if expected != current:
         raise ValueError(f"{path} 的 {name} 与第一份文件不一致。")
     return expected
+
+
+def _indices(source_names: list[str], target_names: list[str], label: str) -> list[int]:
+    indices: list[int] = []
+    for name in target_names:
+        try:
+            indices.append(source_names.index(name))
+        except ValueError as exc:
+            raise ValueError(f"{label} 缺少 {name}，可选值: {source_names}") from exc
+    return indices
 
 
 def _read_scalar_first(data: np.lib.npyio.NpzFile) -> bool:

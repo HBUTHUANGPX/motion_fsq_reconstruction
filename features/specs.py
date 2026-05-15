@@ -15,7 +15,28 @@ from dataclasses import asdict, dataclass, field
 import torch
 
 
-DEFAULT_HUMAN_BODY_NAMES = [
+DEFAULT_ROBOT_BODY_NAMES = [
+    "pelvis",
+    "left_hip_yaw_link",
+    "left_knee_link",
+    "left_ankle_roll_link",
+    "right_hip_yaw_link",
+    "right_knee_link",
+    "right_ankle_roll_link",
+    "torso_link",
+    "left_shoulder_pitch_link",
+    "left_shoulder_yaw_link",
+    "left_elbow_link",
+    "left_wrist_yaw_link",
+    "right_shoulder_pitch_link",
+    "right_shoulder_yaw_link",
+    "right_elbow_link",
+    "right_wrist_yaw_link",
+]
+
+
+DEFAULT_DESIRE_HUMAN_JOINT_NAMES = [
+    "Hips",
     "Spine1",
     "Spine2",
     "Chest",
@@ -44,11 +65,34 @@ DEFAULT_HUMAN_BODY_NAMES = [
 ]
 
 
+DEFAULT_HUMAN_BODY_NAMES = [
+    "Chest",
+    "HeadEnd",
+    "LeftShoulder",
+    "LeftArm",
+    "LeftForeArm",
+    "RightShoulder",
+    "RightArm",
+    "RightForeArm",
+    "LeftLeg",
+    "LeftShin",
+    "LeftFoot",
+    "RightLeg",
+    "RightShin",
+    "RightFoot",
+]
+
+
 @dataclass
 class FeatureBuilderConfig:
     """feature 构建配置。"""
 
     robot_anchor_body: str = "torso_link"
+    robot_body_names: list[str] = field(default_factory=lambda: list(DEFAULT_ROBOT_BODY_NAMES))
+    robot_joint_names: list[str] = field(default_factory=list)
+    desire_human_joint_names: list[str] = field(
+        default_factory=lambda: list(DEFAULT_DESIRE_HUMAN_JOINT_NAMES)
+    )
     human_anchor_body: str = "Hips"
     human_body_names: list[str] = field(default_factory=lambda: list(DEFAULT_HUMAN_BODY_NAMES))
 
@@ -58,10 +102,11 @@ class DualFSQFeatureSchema:
     """四路 DualFSQ feature 的可序列化描述。"""
 
     robot_anchor_body: str
+    robot_body_names: list[str]
+    robot_joint_names: list[str]
+    desire_human_joint_names: list[str]
     human_anchor_body: str
     human_body_names: list[str]
-    robot_joint_names: list[str]
-    robot_body_names: list[str]
     source_human_body_names: list[str]
     actor_robot_feature_dim: int
     actor_human_feature_dim: int

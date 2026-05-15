@@ -93,13 +93,22 @@ def build_motion_runtime(
     """构建 raw、feature 和窗口 buffer。"""
 
     resolved = sources or resolve_motion_sources(config)
-    raw = RawMotionLoader(resolved.paths, groups=resolved.groups).load(
+    raw = RawMotionLoader(
+        resolved.paths,
+        groups=resolved.groups,
+        robot_body_names=config.features.robot_body_names,
+        robot_joint_names=config.features.robot_joint_names,
+        desire_human_joint_names=config.features.desire_human_joint_names,
+    ).load(
         device=device,
         progress=progress,
     )
     features = DualFSQFeatureBuilder(
         FeatureBuilderConfig(
             robot_anchor_body=config.features.robot_anchor_body,
+            robot_body_names=config.features.robot_body_names,
+            robot_joint_names=config.features.robot_joint_names,
+            desire_human_joint_names=config.features.desire_human_joint_names,
             human_anchor_body=config.features.human_anchor_body,
             human_body_names=config.features.human_body_names,
         )

@@ -48,13 +48,21 @@ class DualFSQFeatureBuilder:
         """从 raw motion 构建四路逐帧 feature。"""
 
         robot_anchor_idx = _index(raw.robot_body_names, self._config.robot_anchor_body, "robot body")
+        robot_body_indices = [
+            _index(raw.robot_body_names, name, "robot body")
+            for name in self._config.robot_body_names
+        ]
         human_anchor_idx = _index(raw.human_body_names, self._config.human_anchor_body, "human body")
         human_body_indices = [
             _index(raw.human_body_names, name, "human body")
             for name in self._config.human_body_names
         ]
 
-        actor_robot, critic_robot = self._build_robot_features(raw, robot_anchor_idx)
+        actor_robot, critic_robot = self._build_robot_features(
+            raw,
+            robot_anchor_idx,
+            robot_body_indices,
+        )
         actor_human, critic_human = self._build_human_features(
             raw,
             human_anchor_idx,
@@ -62,10 +70,11 @@ class DualFSQFeatureBuilder:
         )
         schema = DualFSQFeatureSchema(
             robot_anchor_body=self._config.robot_anchor_body,
+            robot_body_names=list(self._config.robot_body_names),
+            robot_joint_names=list(raw.robot_joint_names),
+            desire_human_joint_names=list(raw.human_body_names),
             human_anchor_body=self._config.human_anchor_body,
             human_body_names=list(self._config.human_body_names),
-            robot_joint_names=list(raw.robot_joint_names),
-            robot_body_names=list(raw.robot_body_names),
             source_human_body_names=list(raw.human_body_names),
             actor_robot_feature_dim=int(actor_robot.shape[-1]),
             actor_human_feature_dim=int(actor_human.shape[-1]),
@@ -84,17 +93,20 @@ class DualFSQFeatureBuilder:
         self,
         raw: RawMotionDataset,
         anchor_idx: int,
+        body_indices: list[int],
     ) -> tuple[torch.Tensor, torch.Tensor]:
         robot_anchor_quat = raw.body_quat_w[:, anchor_idx]
         robot_anchor_rot6d = quat_to_rot6d_wxyz(robot_anchor_quat)
         robot_anchor_pos = raw.body_pos_w[:, anchor_idx]
-        anchor_pos_repeat = robot_anchor_pos[:, None, :].expand(-1, raw.body_pos_w.shape[1], -1)
-        anchor_quat_repeat = robot_anchor_quat[:, None, :].expand(-1, raw.body_pos_w.shape[1], -1)
+        selected_body_pos = raw.body_pos_w[:, body_indices]
+        selected_body_quat = raw.body_quat_w[:, body_indices]
+        anchor_pos_repeat = robot_anchor_pos[:, None, :].expand(-1, len(body_indices), -1)
+        anchor_quat_repeat = robot_anchor_quat[:, None, :].expand(-1, len(body_indices), -1)
         body_pos_in_anchor, body_quat_in_anchor = subtract_frame_transforms_wxyz(
             anchor_pos_repeat.reshape(-1, 3),
             anchor_quat_repeat.reshape(-1, 4),
-            raw.body_pos_w.reshape(-1, 3),
-            raw.body_quat_w.reshape(-1, 4),
+            selected_body_pos.reshape(-1, 3),
+            selected_body_quat.reshape(-1, 4),
         )
         body_pos_in_anchor = body_pos_in_anchor.reshape(raw.num_frames, -1)
         body_rot6d_in_anchor = quat_to_rot6d_wxyz(body_quat_in_anchor).reshape(raw.num_frames, -1)
