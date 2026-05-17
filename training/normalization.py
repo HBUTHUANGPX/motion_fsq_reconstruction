@@ -56,6 +56,11 @@ class WindowFeatureNormalizer:
 
         return (value - self._mean) / self._std
 
+    def denormalize(self, value: torch.Tensor) -> torch.Tensor:
+        """将归一化后的 tensor 还原到原始 feature 尺度。"""
+
+        return value * self._std + self._mean
+
     def state_dict(self) -> dict[str, torch.Tensor | float]:
         """返回 checkpoint 可保存状态。"""
 

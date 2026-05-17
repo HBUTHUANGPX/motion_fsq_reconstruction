@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
 from motion_fsq_reconstruction.config.schema import (
@@ -17,6 +18,12 @@ from motion_fsq_reconstruction.config.schema import (
     TrainConfig,
 )
 from motion_fsq_reconstruction.export.latent_exporter import LatentExporter
+from motion_fsq_reconstruction.evaluation.reconstruction import (
+    ReconstructionEvaluator,
+    ReconstructionFeatureLayout,
+    extract_current_joint_pos,
+)
+from motion_fsq_reconstruction.evaluation.scene import MujocoMultiRobotSceneBuilder
 from motion_fsq_reconstruction.features.rotation import quat_to_rot6d_wxyz
 from motion_fsq_reconstruction.pipeline import build_motion_runtime
 from motion_fsq_reconstruction.data import ResolvedMotionSources
@@ -154,6 +161,16 @@ def test_training_and_latent_export_smoke(tmp_path: Path) -> None:
         assert data["motion_lengths"].tolist() == [6]
         assert len(data["motion_paths"].tolist()) == 1
 
+    reconstruction = ReconstructionEvaluator.from_checkpoint(
+        latest,
+        config,
+        device="cpu",
+    ).reconstruct(batch_size=2)
+    assert reconstruction.actor_robot_recon_joint_pos.shape == (6, 2)
+    assert reconstruction.actor_human_recon_joint_pos.shape == (6, 2)
+    assert reconstruction.critic_robot_recon_joint_pos.shape == (6, 2)
+    assert reconstruction.critic_human_recon_joint_pos.shape == (6, 2)
+
 
 def test_frame_balanced_sharding_covers_all_files(tmp_path: Path) -> None:
     paths = [
@@ -225,6 +242,40 @@ def test_distributed_cpu_training_smoke(tmp_path: Path) -> None:
     LatentExporter.from_checkpoint(checkpoint, _load_config_for_test(config_path), device="cpu").export(latent_path)
     with np.load(latent_path, allow_pickle=True) as data:
         assert data["actor_q_human"].shape[0] == sum((5, 6, 7, 8))
+
+
+def test_extract_current_joint_pos_from_actor_and_critic_windows() -> None:
+    actor_window = torch.arange(2 * 3 * 8, dtype=torch.float32).reshape(2, 24)
+    critic_window = torch.arange(2 * 3 * 11, dtype=torch.float32).reshape(2, 33)
+
+    actor_joint = extract_current_joint_pos(
+        actor_window,
+        ReconstructionFeatureLayout(frame_dim=8, joint_start=6, joint_count=2, history=1),
+    )
+    critic_joint = extract_current_joint_pos(
+        critic_window,
+        ReconstructionFeatureLayout(frame_dim=11, joint_start=9, joint_count=2, history=1),
+    )
+
+    np.testing.assert_allclose(actor_joint.numpy(), np.asarray([[14.0, 15.0], [38.0, 39.0]]))
+    np.testing.assert_allclose(critic_joint.numpy(), np.asarray([[20.0, 21.0], [53.0, 54.0]]))
+
+
+def test_mujoco_multi_robot_scene_loads_with_expected_qpos(tmp_path: Path) -> None:
+    mujoco = pytest.importorskip("mujoco")
+    source_xml = _write_minimal_mujoco_xml(tmp_path / "single.xml")
+    scene_xml = tmp_path / "scene.xml"
+
+    MujocoMultiRobotSceneBuilder(
+        source_xml,
+        robot_joint_names=["joint0", "joint1"],
+        instance_names=["original", "actor_robot", "actor_human"],
+    ).write(scene_xml)
+
+    model = mujoco.MjModel.from_xml_path(str(scene_xml))
+
+    assert model.nq == 3 * (7 + 2)
+    assert model.njnt == 3 * 3
 
 
 def _make_config(tmp_path: Path, motion_path: Path) -> MotionFSQReconstructionConfig:
@@ -322,9 +373,12 @@ def _write_motion_npz(path: Path, *, frames: int = 6) -> Path:
         path,
         fps=np.asarray(30),
         scalar_first=np.asarray(True),
+        robot_root_pos=np.zeros((frames, 3), dtype=np.float32),
+        robot_root_quat=np.tile(np.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32), (frames, 1)),
         robot_joint_names=robot_joint_names,
         robot_body_names=robot_body_names,
         human_joint_names=human_joint_names,
+        human_parent_indices=np.asarray([-1, 0, 1], dtype=np.int32),
         robot_joint_pos=np.linspace(0.0, 1.0, frames * 2, dtype=np.float32).reshape(frames, 2),
         robot_joint_vel=np.zeros((frames, 2), dtype=np.float32),
         robot_body_pos=robot_body_pos,
@@ -334,6 +388,43 @@ def _write_motion_npz(path: Path, *, frames: int = 6) -> Path:
         human_global_pos=human_global_pos,
         human_global_quat=identity_human_quat,
         human_local_transforms=human_local_transforms,
+    )
+    return path
+
+
+def _write_minimal_mujoco_xml(path: Path) -> Path:
+    path.write_text(
+        """
+<mujoco model="minimal_g1">
+  <compiler angle="radian"/>
+  <asset>
+    <material name="body_mat" rgba="0.7 0.7 0.7 1"/>
+  </asset>
+  <worldbody>
+    <light name="light" pos="0 0 3"/>
+    <geom name="floor" type="plane" size="5 5 0.1" rgba="0.2 0.2 0.2 1"/>
+    <body name="pelvis" pos="0 0 1">
+      <freejoint name="floating_base_joint"/>
+      <geom name="pelvis_geom" type="sphere" size="0.1" material="body_mat"/>
+      <body name="link0" pos="0 0 0.1">
+        <joint name="joint0" type="hinge" axis="0 1 0"/>
+        <geom name="link0_geom" type="capsule" fromto="0 0 0 0 0 0.2" size="0.03"/>
+        <body name="link1" pos="0 0 0.2">
+          <joint name="joint1" type="hinge" axis="1 0 0"/>
+          <geom name="link1_geom" type="capsule" fromto="0 0 0 0 0 0.2" size="0.03"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="joint0_motor" joint="joint0"/>
+  </actuator>
+  <sensor>
+    <jointpos name="joint0_pos" joint="joint0"/>
+  </sensor>
+</mujoco>
+""".strip(),
+        encoding="utf-8",
     )
     return path
 
