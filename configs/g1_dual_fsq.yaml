@@ -100,7 +100,7 @@ features:
     - RightFoot
 
 model:
-  latent_dim: 64
+  latent_dim: 128
   robot_encoder_hidden_dims: [1024, 512, 256]
   human_encoder_hidden_dims: [1024, 512, 256]
   decoder_hidden_dims: [256, 512, 1024]
@@ -119,8 +119,8 @@ loss:
 
 train:
   device: cuda
-  epochs: 100
-  batch_size: 1024
+  epochs: 10000
+  batch_size: 98304
   learning_rate: 0.0003
   weight_decay: 0.0001
   history: 0
