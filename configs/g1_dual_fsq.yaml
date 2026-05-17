@@ -89,15 +89,19 @@ features:
     - LeftShoulder
     - LeftArm
     - LeftForeArm
+    - LeftHand
     - RightShoulder
     - RightArm
     - RightForeArm
+    - RightHand
     - LeftLeg
     - LeftShin
     - LeftFoot
+    - LeftToeBase
     - RightLeg
     - RightShin
     - RightFoot
+    - RightToeBase
 
 model:
   latent_dim: 128
