@@ -275,36 +275,45 @@ latent/critic_q_robot
 /home/hpx/miniconda3/envs/mimic_baseline/bin/pip install tensorboard
 ```
 
-## 导出 latent
+## 导出 token
 
-训练完成后导出：
+训练完成后，默认将 token 写回每个原始 motion 文件所在目录，文件名为：
 
-```bash
-python motion_fsq_reconstruction/cli/export_latents.py \
-  --checkpoint outputs/motion_fsq_reconstruction/test_run/checkpoints/latest.pt \
-  --config motion_fsq_reconstruction/configs/g1_dual_fsq.yaml \
-  --output outputs/motion_fsq_reconstruction/test_run/latents.npz \
-  --device cuda
+```text
+xxxx.npz -> xxxx_token.npz
 ```
 
-导出的 `.npz` 包含：
+命令：
+
+```bash
+python motion_fsq_reconstruction/cli/export_latents.py
+```
+
+每个 `xxxx_token.npz` 包含：
 
 ```text
 actor_q_human
 actor_q_robot
 critic_q_human
 critic_q_robot
-motion_lengths
-motion_start_indices
-motion_paths
+source_motion_path
+motion_length
+frame_indices
+window_policy
 feature_schema
 config
 ```
 
-latent shape 为：
+四路 token shape 都是：
 
 ```text
 [num_frames, latent_dim]
+```
+
+即每一帧都有对应 token。motion 开头缺少 history、结尾缺少 future 的窗口会夹到当前 clip 边界，`window_policy` 保存为：
+
+```text
+clamp_to_clip
 ```
 
 ## MuJoCo 重构评估
@@ -315,12 +324,6 @@ latent shape 为：
 
 ```bash
 python motion_fsq_reconstruction/cli/evaluate_mujoco.py \
-  --checkpoint outputs/motion_fsq_reconstruction/test_run/checkpoints/latest.pt \
-  --config motion_fsq_reconstruction/configs/g1_dual_fsq.yaml \
-  --motion soma-retargeter/assets/motions/soma_uniform_bvh_export/240918/body_check_001__A548.npz \
-  --xml assets/unitree_g1/g1_29dof_rev_1_0.xml \
-  --output outputs/motion_fsq_reconstruction/test_run/mujoco_eval \
-  --device cuda \
   --show-viewer
 ```
 
@@ -328,12 +331,6 @@ python motion_fsq_reconstruction/cli/evaluate_mujoco.py \
 
 ```bash
 python motion_fsq_reconstruction/cli/evaluate_mujoco.py \
-  --checkpoint outputs/motion_fsq_reconstruction/test_run/checkpoints/latest.pt \
-  --config motion_fsq_reconstruction/configs/g1_dual_fsq.yaml \
-  --xml assets/unitree_g1/g1_29dof_rev_1_0.xml \
-  --output outputs/motion_fsq_reconstruction/test_run/mujoco_eval_all \
-  --device cuda \
-  --all-motions \
   --no-viewer
 ```
 
@@ -342,12 +339,6 @@ python motion_fsq_reconstruction/cli/evaluate_mujoco.py \
 ```bash
 /home/hpx/miniconda3/envs/mimic_baseline/bin/python \
   motion_fsq_reconstruction/cli/evaluate_mujoco.py \
-  --checkpoint outputs/motion_fsq_reconstruction/test_run/checkpoints/latest.pt \
-  --config motion_fsq_reconstruction/configs/g1_dual_fsq.yaml \
-  --motion <motion.npz> \
-  --xml assets/unitree_g1/g1_29dof_rev_1_0.xml \
-  --output outputs/motion_fsq_reconstruction/test_run/mujoco_eval \
-  --device cuda \
   --show-viewer
 ```
 

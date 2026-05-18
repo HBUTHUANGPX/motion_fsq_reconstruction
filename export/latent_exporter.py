@@ -11,8 +11,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
-
+import os
 import numpy as np
 import torch
 from tqdm.auto import tqdm
@@ -70,14 +69,45 @@ class LatentExporter:
             device=device_obj,
         )
 
-    def export(self, output_path: str | Path, *, batch_size: int | None = None) -> Path:
-        """导出全帧 quantized latent。
+    def export_next_to_motion_files(self, *, batch_size: int | None = None) -> list[Path]:
+        """按原 motion 文件逐个保存 token npz。
 
         前置条件：
-            checkpoint 已加载。
+            checkpoint 已加载，runtime 中保留原 motion_paths 和 clip 边界。
         后置条件：
-            写入包含四路 latent 的 npz 文件。
+            每个原始 `xxxx.npz` 同级目录下生成 `xxxx_token.npz`。
         """
+
+        latents = self._collect_all_frame_latents(batch_size=batch_size)
+        lengths = self._runtime.raw.motion_lengths.detach().cpu().numpy().astype(np.int64)
+        starts = self._runtime.raw.motion_start_indices.detach().cpu().numpy().astype(np.int64)
+        written: list[Path] = []
+        for motion_index, motion_path_text in enumerate(self._runtime.raw.motion_paths):
+            motion_path = Path(motion_path_text)
+            start = int(starts[motion_index])
+            length = int(lengths[motion_index])
+            output = motion_path.with_name(f"{motion_path.stem}_token")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            stop = start + length
+            np.savez(
+                output,
+                actor_q_human=latents["actor_q_human"][start:stop],
+                actor_q_robot=latents["actor_q_robot"][start:stop],
+                critic_q_human=latents["critic_q_human"][start:stop],
+                critic_q_robot=latents["critic_q_robot"][start:stop],
+                source_motion_path=np.asarray(str(motion_path), dtype=object),
+                motion_length=np.asarray(length, dtype=np.int64),
+                frame_indices=np.arange(length, dtype=np.int64),
+                window_policy=np.asarray("clamp_to_clip", dtype=object),
+                feature_schema=np.asarray(self._runtime.features.schema.to_dict(), dtype=object),
+                config=np.asarray(self._config.to_dict(), dtype=object),
+            )
+            os.rename(motion_path.with_name(f"{motion_path.stem}_token.npz"), motion_path.with_name(f"{motion_path.stem}_token.tknpz"))
+            written.append(output)
+        return written
+
+    def _collect_all_frame_latents(self, *, batch_size: int | None = None) -> dict[str, np.ndarray]:
+        """收集所有帧的四路 quantized latent。"""
 
         batch_size = batch_size or self._config.train.batch_size
         centers = self._runtime.buffer.index.all_center_indices
@@ -118,19 +148,9 @@ class LatentExporter:
             or critic_q_robot is None
         ):
             raise RuntimeError("没有可导出的 latent。")
-
-        output = Path(output_path)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(
-            output,
-            actor_q_human=actor_q_human.numpy(),
-            actor_q_robot=actor_q_robot.numpy(),
-            critic_q_human=critic_q_human.numpy(),
-            critic_q_robot=critic_q_robot.numpy(),
-            motion_lengths=self._runtime.raw.motion_lengths.detach().cpu().numpy(),
-            motion_start_indices=self._runtime.raw.motion_start_indices.detach().cpu().numpy(),
-            motion_paths=np.asarray(self._runtime.raw.motion_paths, dtype=object),
-            feature_schema=np.asarray(self._runtime.features.schema.to_dict(), dtype=object),
-            config=np.asarray(self._config.to_dict(), dtype=object),
-        )
-        return output
+        return {
+            "actor_q_human": actor_q_human.numpy(),
+            "actor_q_robot": actor_q_robot.numpy(),
+            "critic_q_human": critic_q_human.numpy(),
+            "critic_q_robot": critic_q_robot.numpy(),
+        }

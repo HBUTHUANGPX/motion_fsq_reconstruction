@@ -150,16 +150,18 @@ def test_training_and_latent_export_smoke(tmp_path: Path) -> None:
     trainer = DualFSQTrainer(config)
     latest = trainer.train()
 
-    output_path = tmp_path / "latents.npz"
-    LatentExporter.from_checkpoint(latest, config, device="cpu").export(output_path)
+    exporter = LatentExporter.from_checkpoint(latest, config, device="cpu")
 
-    with np.load(output_path, allow_pickle=True) as data:
+    token_paths = exporter.export_next_to_motion_files(batch_size=2)
+    assert token_paths == [motion_path.with_name("sample_token.npz")]
+    with np.load(token_paths[0], allow_pickle=True) as data:
         assert data["actor_q_human"].shape == (6, 4)
         assert data["actor_q_robot"].shape == (6, 4)
         assert data["critic_q_human"].shape == (6, 4)
         assert data["critic_q_robot"].shape == (6, 4)
-        assert data["motion_lengths"].tolist() == [6]
-        assert len(data["motion_paths"].tolist()) == 1
+        assert int(data["motion_length"]) == 6
+        assert data["frame_indices"].tolist() == list(range(6))
+        assert str(data["window_policy"].item()) == "clamp_to_clip"
 
     reconstruction = ReconstructionEvaluator.from_checkpoint(
         latest,
@@ -238,10 +240,18 @@ def test_distributed_cpu_training_smoke(tmp_path: Path) -> None:
 
     checkpoint = output_root / "ddp_cpu_smoke" / "checkpoints" / "latest.pt"
     assert checkpoint.is_file()
-    latent_path = tmp_path / "ddp_latents.npz"
-    LatentExporter.from_checkpoint(checkpoint, _load_config_for_test(config_path), device="cpu").export(latent_path)
-    with np.load(latent_path, allow_pickle=True) as data:
-        assert data["actor_q_human"].shape[0] == sum((5, 6, 7, 8))
+    token_paths = LatentExporter.from_checkpoint(
+        checkpoint,
+        _load_config_for_test(config_path),
+        device="cpu",
+    ).export_next_to_motion_files()
+    assert len(token_paths) == 4
+    total_frames = 0
+    for token_path in token_paths:
+        with np.load(token_path, allow_pickle=True) as data:
+            total_frames += int(data["actor_q_human"].shape[0])
+            assert data["actor_q_human"].shape[1] == 4
+    assert total_frames == sum((5, 6, 7, 8))
 
 
 def test_extract_current_joint_pos_from_actor_and_critic_windows() -> None:

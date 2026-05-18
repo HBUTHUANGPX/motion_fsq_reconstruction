@@ -623,7 +623,7 @@ load_checkpoint()
 outputs/motion_fsq_reconstruction/<run_name>/checkpoints/latest.pt
 ```
 
-## 17. Latent 导出
+## 17. Token 导出
 
 导出入口在：
 
@@ -643,7 +643,6 @@ motion_fsq_reconstruction/export/latent_exporter.py
 python -m motion_fsq_reconstruction.cli.export_latents \
   --checkpoint outputs/motion_fsq_reconstruction/test_run/checkpoints/latest.pt \
   --config motion_fsq_reconstruction/configs/g1_dual_fsq.yaml \
-  --output outputs/motion_fsq_reconstruction/test_run/latents.npz \
   --device cuda
 ```
 
@@ -656,7 +655,7 @@ python -m motion_fsq_reconstruction.cli.export_latents \
 加载 checkpoint model state
 加载 checkpoint normalizers
 遍历所有 center frame
-导出四路 quantized latent
+为每个原始 motion 文件同目录导出 `xxxx_token.npz`
 ```
 
 输出 `.npz` 包含：
